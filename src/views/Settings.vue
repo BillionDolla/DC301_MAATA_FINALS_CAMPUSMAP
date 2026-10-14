@@ -1,342 +1,159 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { buildings, locations, getStorageData } from '../stores/campusStore'
+import { computed, onMounted, ref } from 'vue'
+import NavBar from '../components/NavBar.vue'
+import {
+  buildings, clearStorageData, getStorageData, importStorageData, locations, resetStorageData
+} from '../stores/campusStore'
 
-const settings = ref({
-  theme: 'light',
-  autoSave: true,
-  showBuildingCodes: true,
-  compactView: false
-})
-
-const stats = ref({
-  totalBuildings: 0,
-  totalLocations: 0,
-  favoriteCount: 0,
-  storageUsed: '0 KB'
-})
+const SETTINGS_KEY = 'campus-guide-settings'
+const settings = ref({ theme: 'light', compactView: false })
+const notice = ref('')
+const error = ref('')
+const favoritesCount = computed(() => buildings.value.filter(building => building.isFavorite).length)
+const storageSize = computed(() => `${(new Blob([JSON.stringify(getStorageData())]).size / 1024).toFixed(1)} KB`)
 
 onMounted(() => {
-  loadSettings()
-  updateStats()
+  try {
+    const saved = localStorage.getItem(SETTINGS_KEY)
+    if (saved) settings.value = { ...settings.value, ...JSON.parse(saved) }
+  } catch (loadError) {
+    error.value = `Saved preferences could not be loaded: ${loadError.message}`
+  }
+  applyTheme()
 })
 
-function loadSettings() {
-  try {
-    const stored = localStorage.getItem('campus-guide-settings')
-    if (stored) {
-      settings.value = { ...settings.value, ...JSON.parse(stored) }
-    }
-    applyTheme(settings.value.theme)
-  } catch (e) {
-    console.warn('Failed to load settings:', e)
-  }
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', settings.value.theme)
+  document.documentElement.setAttribute('data-compact', String(settings.value.compactView))
 }
 
 function saveSettings() {
+  error.value = ''
+  notice.value = ''
   try {
-    localStorage.setItem('campus-guide-settings', JSON.stringify(settings.value))
-    applyTheme(settings.value.theme)
-  } catch (e) {
-    console.warn('Failed to save settings:', e)
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings.value))
+    applyTheme()
+    notice.value = 'Your preferences have been saved.'
+  } catch (saveError) {
+    error.value = `Preferences could not be saved: ${saveError.message}`
   }
-}
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme)
-}
-
-function updateStats() {
-  stats.value.totalBuildings = buildings.value.length
-  stats.value.totalLocations = locations.value.length
-  stats.value.favoriteCount = buildings.value.filter(b => b.isFavorite).length
-  
-  try {
-    const data = JSON.stringify(getStorageData())
-    const bytes = new Blob([data]).size
-    stats.value.storageUsed = formatBytes(bytes)
-  } catch (e) {
-    stats.value.storageUsed = 'Unknown'
-  }
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
 }
 
 function exportData() {
-  const data = getStorageData()
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `campus-guide-backup-${new Date().toISOString().split('T')[0]}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  error.value = ''
+  try {
+    const blob = new Blob([JSON.stringify(getStorageData(), null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `campus-guide-backup-${new Date().toISOString().slice(0, 10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    notice.value = 'Your campus backup has been downloaded.'
+  } catch (exportError) {
+    error.value = `Backup could not be exported: ${exportError.message}`
+  }
 }
 
-function importData(event) {
-  const file = event.target.files[0]
+async function importData(event) {
+  const input = event.target
+  const file = input.files?.[0]
   if (!file) return
-  
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    try {
-      const data = JSON.parse(e.target.result)
-      if (data.buildings && data.locations) {
-        localStorage.setItem('campus-map-data', JSON.stringify(data))
-        location.reload()
-      } else {
-        alert('Invalid backup file format')
-      }
-    } catch (err) {
-      alert('Failed to import: ' + err.message)
-    }
-  }
-  reader.readAsText(file)
-  event.target.value = ''
-}
-
-function resetToDefaults() {
-  if (confirm('This will delete all your data and restore defaults. Are you sure?')) {
-    localStorage.removeItem('campus-map-data')
-    localStorage.removeItem('campus-guide-settings')
-    location.reload()
+  error.value = ''
+  notice.value = ''
+  try {
+    if (file.size > 5 * 1024 * 1024) throw new Error('Backup files must be 5 MB or smaller.')
+    const data = JSON.parse(await file.text())
+    if (!confirm('Importing this backup will replace your current buildings and locations. Continue?')) return
+    importStorageData(data)
+    notice.value = 'Your campus backup has been restored.'
+  } catch (importError) {
+    error.value = `Backup could not be imported: ${importError.message}`
+  } finally {
+    input.value = ''
   }
 }
 
-function clearAllData() {
-  if (confirm('This will delete ALL buildings and locations. This cannot be undone!')) {
-    if (confirm('Are you absolutely sure?')) {
-      localStorage.removeItem('campus-map-data')
-      location.reload()
-    }
+function restoreDefaults() {
+  if (!confirm('Restore the sample campus? Your current buildings and locations will be replaced.')) return
+  try {
+    resetStorageData()
+    notice.value = 'The sample campus has been restored.'
+    error.value = ''
+  } catch (resetError) {
+    error.value = `Sample campus could not be restored: ${resetError.message}`
+  }
+}
+
+function clearData() {
+  if (!confirm('Delete all buildings and locations? This cannot be undone unless you have a backup.')) return
+  try {
+    clearStorageData()
+    notice.value = 'All buildings and locations have been removed.'
+    error.value = ''
+  } catch (clearError) {
+    error.value = `Campus data could not be cleared: ${clearError.message}`
   }
 }
 </script>
 
 <template>
-  <div class="page-container">
+  <div class="site-shell">
     <NavBar />
-    
     <main class="main-content">
-      <header class="page-header">
-        <h1>⚙️ Settings</h1>
-        <p>Manage your Campus Guide preferences and data</p>
+      <header class="page-heading">
+        <div><p class="eyebrow">Make it your own</p><h1>Settings & data</h1><p>Manage the look of your guide and keep your campus data backed up.</p></div>
       </header>
+      <div class="settings-stack">
+        <section class="panel panel-pad">
+          <div class="panel-heading"><div><h2>Appearance</h2><p>Choose how Campus Guide looks on this device.</p></div></div>
+          <div class="settings-grid">
+            <div class="setting-row">
+              <div><strong>Color theme</strong><p>Switch between light and dark display.</p></div>
+              <select v-model="settings.theme" class="field setting-control" aria-label="Color theme" @change="saveSettings">
+                <option value="light">Light</option><option value="dark">Dark</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <div><strong>Compact layout</strong><p>Save your preference for a denser guide view.</p></div>
+              <input v-model="settings.compactView" type="checkbox" aria-label="Compact layout" @change="saveSettings" />
+            </div>
+          </div>
+        </section>
 
-      <section class="card">
-        <h2 class="section-title">🎨 Appearance</h2>
-        <div class="settings-grid">
-          <div class="setting-item">
-            <div class="setting-info">
-              <h3>Theme</h3>
-              <p>Choose your preferred color theme</p>
-            </div>
-            <select v-model="settings.theme" @change="saveSettings" class="setting-control">
-              <option value="light">☀️ Light</option>
-              <option value="dark">🌙 Dark</option>
-              <option value="auto">💻 System</option>
-            </select>
+        <section class="panel panel-pad">
+          <div class="panel-heading"><div><h2>Campus at a glance</h2><p>Live totals from your current campus directory.</p></div></div>
+          <div class="settings-stats">
+            <div class="settings-stat"><span>Buildings</span><strong>{{ buildings.length }}</strong></div>
+            <div class="settings-stat"><span>Places</span><strong>{{ locations.length }}</strong></div>
+            <div class="settings-stat"><span>Favorites</span><strong>{{ favoritesCount }}</strong></div>
+            <div class="settings-stat"><span>Data size</span><strong>{{ storageSize }}</strong></div>
           </div>
-          
-          <div class="setting-item">
-            <div class="setting-info">
-              <h3>Compact View</h3>
-              <p>Reduce spacing for more content on screen</p>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" v-model="settings.compactView" @change="saveSettings" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          
-          <div class="setting-item">
-            <div class="setting-info">
-              <h3>Show Building Codes</h3>
-              <p>Display short codes (ADM, SCI, etc.) throughout the app</p>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" v-model="settings.showBuildingCodes" @change="saveSettings" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          
-          <div class="setting-item">
-            <div class="setting-info">
-              <h3>Auto-save Changes</h3>
-              <p>Automatically save changes to localStorage</p>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" v-model="settings.autoSave" @change="saveSettings" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="card">
-        <h2 class="section-title">📊 Statistics</h2>
-        <div class="stats-grid">
-          <div class="stat-card">
-            <span class="stat-icon">🏢</span>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.totalBuildings }}</span>
-              <span class="stat-label">Total Buildings</span>
-            </div>
+        <section class="panel panel-pad">
+          <div class="panel-heading"><div><h2>Backup & restore</h2><p>Your data is stored in this browser. Export a backup before moving devices or clearing data.</p></div></div>
+          <div class="data-actions">
+            <button class="btn" @click="exportData">↓ Export backup (.json)</button>
+            <label class="btn btn-secondary">↑ Import backup<input type="file" accept=".json,application/json" hidden @change="importData" /></label>
           </div>
-          <div class="stat-card">
-            <span class="stat-icon">📍</span>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.totalLocations }}</span>
-              <span class="stat-label">Total Locations</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <span class="stat-icon">⭐</span>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.favoriteCount }}</span>
-              <span class="stat-label">Favorites</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <span class="stat-icon">💾</span>
-            <div class="stat-info">
-              <span class="stat-value">{{ stats.storageUsed }}</span>
-              <span class="stat-label">Storage Used</span>
-            </div>
-          </div>
-        </div>
-      </section>
+          <p v-if="notice" class="status-note" role="status">{{ notice }}</p>
+          <p v-if="error" class="inline-alert" role="alert" style="margin-top:12px">{{ error }}</p>
+        </section>
 
-      <section class="card">
-        <h2 class="section-title">📁 Data Management</h2>
-        <div class="data-actions">
-          <div class="action-group">
-            <h3>Export Data</h3>
-            <p>Download a backup of all your buildings and locations</p>
-            <button @click="exportData" class="btn btn-primary">📥 Export to JSON</button>
+        <section class="panel panel-pad danger-panel">
+          <div class="panel-heading"><div><h2>Reset campus data</h2><p>These actions change the campus directory saved in this browser.</p></div></div>
+          <div class="data-actions">
+            <button class="btn btn-secondary" @click="restoreDefaults">Restore sample campus</button>
+            <button class="btn btn-danger" @click="clearData">Delete all campus data</button>
           </div>
-          
-          <div class="action-group">
-            <h3>Import Data</h3>
-            <p>Restore from a previously exported JSON file</p>
-            <label class="file-input">
-              <input type="file" accept=".json" @change="importData" hidden />
-              <span class="btn btn-secondary">📤 Choose File</span>
-            </label>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="card danger-zone">
-        <h2 class="section-title">⚠️ Danger Zone</h2>
-        <div class="danger-actions">
-          <div class="action-group">
-            <h3>Reset to Defaults</h3>
-            <p>Restore all buildings and settings to original state</p>
-            <button @click="resetToDefaults" class="btn btn-warning">🔄 Reset to Defaults</button>
-          </div>
-          
-          <div class="action-group">
-            <h3>Clear All Data</h3>
-            <p>Permanently delete all buildings and locations</p>
-            <button @click="clearAllData" class="btn btn-danger">🗑️ Clear All Data</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 class="section-title">ℹ️ About</h2>
-        <div class="about-info">
-          <h3>Campus Map & Location Guide</h3>
-          <p>Version 1.0.0</p>
-          <p>A Vue.js SPA for managing campus buildings and locations with full CRUD functionality.</p>
-          <div class="tech-stack">
-            <h4>Built with:</h4>
-            <ul>
-              <li>Vue 3 (Composition API)</li>
-              <li>Vue Router 4</li>
-              <li>Vite</li>
-              <li>localStorage for persistence</li>
-            </ul>
-          </div>
-          <p class="features">
-            <strong>Features:</strong> Building & Location CRUD, Favorites, Search & Filter, Data Export/Import, Dark/Light Theme
-          </p>
-        </div>
-      </section>
+        <section class="welcome-note">
+          <strong>About this project</strong>
+          Campus Map & Location Guide is a Vue 3 single-page application. Vue Router enables page navigation; reactive shared state powers building and location CRUD; localStorage preserves changes between visits. Your data stays in this browser and is not uploaded to a server.
+        </section>
+      </div>
     </main>
   </div>
 </template>
-
-<script>
-import NavBar from '../components/NavBar.vue'
-export default { components: { NavBar } }
-</script>
-
-<style scoped>
-.page-container { min-height: 100vh; background: #f5f6fa; }
-.main-content { max-width: 900px; margin: 0 auto; padding: 2rem; }
-.page-header { margin-bottom: 2rem; }
-.page-header h1 { margin: 0 0 0.5rem; color: #2c3e50; }
-.page-header p { color: #7f8c8d; margin: 0; }
-
-.card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1.5rem; margin-bottom: 1.5rem; }
-.section-title { margin: 0 0 1.5rem; color: #2c3e50; font-size: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1px solid #e1e8ed; }
-
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
-.setting-item { display: flex; justify-content: space-between; align-items: center; padding: 1rem; background: #f8f9fa; border-radius: 8px; }
-.setting-info h3 { margin: 0 0 0.25rem; color: #2c3e50; font-size: 1rem; }
-.setting-info p { margin: 0; color: #7f8c8d; font-size: 0.85rem; }
-.setting-control { padding: 0.5rem 1rem; border: 1px solid #dfe6e9; border-radius: 6px; background: white; font-size: 0.9rem; }
-
-.toggle { position: relative; width: 50px; height: 26px; }
-.toggle input { opacity: 0; width: 0; height: 0; }
-.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: #dfe6e9; border-radius: 26px; transition: 0.3s; }
-.toggle-slider:before { position: absolute; content: ''; height: 20px; width: 20px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-.toggle input:checked + .toggle-slider { background: #3498db; }
-.toggle input:checked + .toggle-slider:before { transform: translateX(24px); }
-
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
-.stat-card { display: flex; align-items: center; gap: 1rem; padding: 1.25rem; background: #f8f9fa; border-radius: 8px; }
-.stat-icon { font-size: 2rem; }
-.stat-info { display: flex; flex-direction: column; }
-.stat-value { font-size: 1.75rem; font-weight: bold; color: #2c3e50; }
-.stat-label { font-size: 0.85rem; color: #7f8c8d; }
-
-.data-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
-.action-group h3 { margin: 0 0 0.5rem; color: #2c3e50; }
-.action-group p { margin: 0 0 1rem; color: #7f8c8d; font-size: 0.9rem; }
-.file-input { display: inline-block; cursor: pointer; }
-
-.danger-zone { border: 1px solid #fadbd8; background: #fdf2f2; }
-.danger-zone .section-title { color: #c0392b; border-bottom-color: #fadbd8; }
-.danger-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
-
-.btn { padding: 0.6rem 1.2rem; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 0.9rem; transition: all 0.2s; }
-.btn-primary { background: #3498db; color: white; }
-.btn-primary:hover { background: #2980b9; }
-.btn-secondary { background: #ecf0f1; color: #2c3e50; }
-.btn-secondary:hover { background: #bdc3c7; }
-.btn-warning { background: #f39c12; color: white; }
-.btn-warning:hover { background: #e67e22; }
-.btn-danger { background: #e74c3c; color: white; }
-.btn-danger:hover { background: #c0392b; }
-
-.about-info h3 { margin: 0 0 0.5rem; color: #2c3e50; }
-.about-info p { color: #7f8c8d; margin: 0.25rem 0; }
-.tech-stack { margin: 1.5rem 0; }
-.tech-stack h4 { margin: 0 0 0.5rem; color: #2c3e50; font-size: 0.95rem; }
-.tech-stack ul { margin: 0; padding-left: 1.25rem; color: #7f8c8d; }
-.tech-stack li { margin: 0.25rem 0; }
-.features { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #e1e8ed; color: #7f8c8d; font-size: 0.9rem; }
-
-@media (max-width: 768px) {
-  .main-content { padding: 1rem; }
-  .setting-item { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
-}
-</style>

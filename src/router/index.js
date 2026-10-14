@@ -10,12 +10,16 @@ const routes = [
   { path: '/map', component: CampusMap },
   { path: '/directory', component: BuildingDirectory },
   { path: '/favorites', component: Favorites },
-  { path: '/settings', component: Settings }
+  { path: '/settings', component: Settings },
+  { path: '/:pathMatch(.*)*', redirect: '/' }
 ]
 
 const router = createRouter({
   history: createWebHistory(),
-  routes
+  routes,
+  scrollBehavior() {
+    return { top: 0 }
+  }
 })
 
 export default router

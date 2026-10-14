@@ -1,273 +1,167 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { buildings, locations, updateBuilding, deleteBuilding, toggleFavorite } from '../stores/campusStore'
+import { computed, ref } from 'vue'
+import NavBar from '../components/NavBar.vue'
+import {
+  addBuilding, buildings, deleteBuilding, getLocationsByBuilding, toggleFavorite, updateBuilding
+} from '../stores/campusStore'
 
 const searchQuery = ref('')
-const filterLocation = ref('')
+const filterArea = ref('')
 const sortBy = ref('name')
 const showForm = ref(false)
-const editingBuilding = ref(null)
+const editingId = ref(null)
+const formError = ref('')
+const form = ref(emptyForm())
 
-const buildingForm = ref({
-  name: '', code: '', description: '', location: '', floors: 1, facilities: ''
-})
-
-const locationsList = computed(() => {
-  let result = [...buildings.value]
-  
-  if (searchQuery.value) {
-    const q = searchQuery.value.toLowerCase()
-    result = result.filter(b => 
-      b.name.toLowerCase().includes(q) ||
-      b.code.toLowerCase().includes(q) ||
-      b.description.toLowerCase().includes(q) ||
-      b.location.toLowerCase().includes(q)
-    )
-  }
-  
-  if (filterLocation.value) {
-    result = result.filter(b => b.location === filterLocation.value)
-  }
-  
-  result.sort((a, b) => {
-    if (sortBy.value === 'name') return a.name.localeCompare(b.name)
-    if (sortBy.value === 'code') return a.code.localeCompare(b.code)
-    if (sortBy.value === 'location') return a.location.localeCompare(b.location)
-    if (sortBy.value === 'floors') return b.floors - a.floors
-    return 0
-  })
-  
-  return result
-})
-
-const allLocations = computed(() => [...new Set(buildings.value.map(b => b.location))])
-
-function resetForm() {
-  buildingForm.value = { name: '', code: '', description: '', location: '', floors: 1, facilities: '' }
-  editingBuilding.value = null
-  showForm.value = false
+function emptyForm() {
+  return { name: '', code: '', description: '', location: '', floors: 1, facilities: '' }
 }
 
-function startEdit(b) {
-  editingBuilding.value = b
-  buildingForm.value = { ...b, facilities: b.facilities.join(', ') }
+const areas = computed(() => [...new Set(buildings.value.map(building => building.location))].sort())
+const filteredBuildings = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  const result = buildings.value.filter(building => {
+    const matchesQuery = !query || [building.name, building.code, building.description, building.location, ...building.facilities]
+      .some(value => value.toLowerCase().includes(query))
+    return matchesQuery && (!filterArea.value || building.location === filterArea.value)
+  })
+  return result.sort((a, b) => {
+    if (sortBy.value === 'code') return a.code.localeCompare(b.code)
+    if (sortBy.value === 'area') return a.location.localeCompare(b.location) || a.name.localeCompare(b.name)
+    if (sortBy.value === 'floors') return b.floors - a.floors || a.name.localeCompare(b.name)
+    return a.name.localeCompare(b.name)
+  })
+})
+
+function openForm(building = null) {
+  editingId.value = building?.id ?? null
+  formError.value = ''
+  form.value = building ? { ...building, facilities: building.facilities.join(', ') } : emptyForm()
   showForm.value = true
 }
 
-function submitForm() {
-  const data = {
-    ...buildingForm.value,
-    facilities: buildingForm.value.facilities.split(',').map(f => f.trim()).filter(f => f),
-    floors: parseInt(buildingForm.value.floors)
-  }
-  
-  if (editingBuilding.value) {
-    updateBuilding(editingBuilding.value.id, data)
-  }
-  resetForm()
+function closeForm() {
+  showForm.value = false
+  editingId.value = null
+  formError.value = ''
 }
 
-function confirmDelete(id) {
-  if (confirm('Delete this building and all its locations?')) {
-    deleteBuilding(id)
+function saveBuilding() {
+  const data = {
+    ...form.value,
+    name: form.value.name.trim(),
+    code: form.value.code.trim().toUpperCase(),
+    location: form.value.location.trim(),
+    floors: Number(form.value.floors),
+    facilities: form.value.facilities.split(',').map(value => value.trim()).filter(Boolean)
+  }
+  const duplicateCode = buildings.value.some(building =>
+    building.code.toLowerCase() === data.code.toLowerCase() && building.id !== editingId.value
+  )
+  if (!data.name || !data.code || !data.location || !Number.isInteger(data.floors) || data.floors < 1) {
+    formError.value = 'Enter a name, code, campus area, and a valid floor count.'
+    return
+  }
+  if (duplicateCode) {
+    formError.value = 'That short code is already in use. Choose a unique code.'
+    return
+  }
+  try {
+    const saved = editingId.value ? updateBuilding(editingId.value, data) : addBuilding(data)
+    if (!saved) throw new Error('The building could not be found.')
+    closeForm()
+  } catch (error) {
+    formError.value = error.message
+  }
+}
+
+function removeBuilding(building) {
+  if (confirm(`Delete ${building.name} and all of its locations?`)) {
+    try {
+      deleteBuilding(building.id)
+    } catch (error) {
+      window.alert(error.message)
+    }
   }
 }
 </script>
 
 <template>
-  <div class="page-container">
+  <div class="site-shell">
     <NavBar />
-    
     <main class="main-content">
-      <header class="page-header">
-        <h1>🏢 Building Directory</h1>
-        <p>Browse and manage all campus buildings</p>
+      <header class="page-heading">
+        <div>
+          <p class="eyebrow">Know before you go</p>
+          <h1>Building directory</h1>
+          <p>Find buildings by name, campus area, or facility. Add and maintain campus details as they change.</p>
+        </div>
+        <button class="btn" @click="openForm()">＋ Add building</button>
       </header>
 
-      <section class="card">
-        <div class="card-header">
-          <h2>All Buildings ({{ locationsList.length }})</h2>
-          <button @click="showForm = true; editingBuilding = null; resetForm()" class="btn btn-primary">+ Add Building</button>
+      <section class="panel panel-pad">
+        <div class="panel-heading">
+          <div><h2>All buildings <span class="code-pill">{{ filteredBuildings.length }}</span></h2><p>{{ buildings.length }} total campus buildings</p></div>
+          <router-link to="/map" class="btn btn-secondary btn-sm">View campus map ↗</router-link>
         </div>
-
         <div class="toolbar">
-          <div class="search-box">
-            <input 
-              v-model="searchQuery" 
-              placeholder="Search buildings..." 
-              class="search-input"
-              @input="searchQuery = $event.target.value"
-            >
-            <span class="search-icon">🔍</span>
-          </div>
-          <div class="filters">
-            <select v-model="filterLocation" class="filter-select">
-              <option value="">All Locations</option>
-              <option v-for="loc in allLocations" :key="loc" :value="loc">{{ loc }}</option>
-            </select>
-            <select v-model="sortBy" class="filter-select">
-              <option value="name">Sort by Name</option>
-              <option value="code">Sort by Code</option>
-              <option value="location">Sort by Location</option>
-              <option value="floors">Sort by Floors (desc)</option>
-            </select>
-          </div>
+          <label class="search-field search-wrap">
+            <span class="search-glyph" aria-hidden="true">⌕</span>
+            <input v-model="searchQuery" type="search" aria-label="Search buildings" placeholder="Search name, code, facility…" />
+          </label>
+          <select v-model="filterArea" aria-label="Filter by campus area"><option value="">All areas</option><option v-for="area in areas" :key="area" :value="area">{{ area }}</option></select>
+          <select v-model="sortBy" aria-label="Sort buildings">
+            <option value="name">Sort: name</option><option value="code">Sort: code</option>
+            <option value="area">Sort: area</option><option value="floors">Sort: floors</option>
+          </select>
         </div>
-
-        <div class="buildings-table-container">
-          <table class="buildings-table">
-            <thead>
-              <tr>
-                <th>Building</th>
-                <th>Code</th>
-                <th>Location</th>
-                <th>Floors</th>
-                <th>Facilities</th>
-                <th>Locations</th>
-                <th>Favorite</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Building</th><th>Code</th><th>Campus area</th><th>Floors</th><th>Places</th><th>Facilities</th><th>Actions</th></tr></thead>
             <tbody>
-              <tr v-for="b in locationsList" :key="b.id">
-                <td>
-                  <strong>{{ b.name }}</strong>
-                  <br><small>{{ b.description }}</small>
-                </td>
-                <td><span class="code-badge">{{ b.code }}</span></td>
-                <td>{{ b.location }}</td>
-                <td>{{ b.floors }}</td>
-                <td>
-                  <div class="facility-tags">
-                    <span v-for="f in b.facilities" :key="f" class="facility-tag">{{ f }}</span>
-                  </div>
-                </td>
-                <td>{{ getLocationCount(b.id) }}</td>
-                <td>
-                  <button @click="toggleFavorite(b.id)" class="fav-btn" :class="{ active: b.isFavorite }" :title="b.isFavorite ? 'Remove from favorites' : 'Add to favorites'">
-                    {{ b.isFavorite ? '⭐' : '☆' }}
-                  </button>
-                </td>
-                <td>
-                  <div class="action-buttons">
-                    <button @click="startEdit(b)" class="btn-icon" title="Edit">✏️</button>
-                    <button @click="confirmDelete(b.id)" class="btn-icon danger" title="Delete">🗑️</button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="locationsList.length === 0">
-                <td colspan="8" class="empty-state">No buildings found. Add your first building!</td>
+              <tr v-for="building in filteredBuildings" :key="building.id">
+                <td><span class="table-primary">{{ building.name }}</span><span class="table-secondary">{{ building.description || 'No description provided' }}</span></td>
+                <td><span class="code-pill">{{ building.code }}</span></td>
+                <td>{{ building.location }}</td>
+                <td>{{ building.floors }}</td>
+                <td>{{ getLocationsByBuilding(building.id).length }}</td>
+                <td><div class="facility-tags"><span v-for="facility in building.facilities.slice(0, 3)" :key="facility" class="facility-tag">{{ facility }}</span><span v-if="building.facilities.length > 3" class="table-secondary">+{{ building.facilities.length - 3 }}</span></div></td>
+                <td><div class="action-row">
+                  <button class="icon-button" :class="{ 'is-favorite': building.isFavorite }" :aria-label="building.isFavorite ? 'Remove from favorites' : 'Add to favorites'" :title="building.isFavorite ? 'Remove from favorites' : 'Add to favorites'" @click="toggleFavorite(building.id)">{{ building.isFavorite ? '★' : '☆' }}</button>
+                  <button class="icon-button" :aria-label="`Edit ${building.name}`" title="Edit" @click="openForm(building)">✎</button>
+                  <button class="icon-button" :aria-label="`Delete ${building.name}`" title="Delete" @click="removeBuilding(building)">×</button>
+                  <router-link class="icon-button" :to="{ path: '/map', query: { building: building.id } }" :aria-label="`View ${building.name} on map`" title="View on map">↗</router-link>
+                </div></td>
               </tr>
             </tbody>
           </table>
+          <div v-if="!filteredBuildings.length" class="empty-state">
+            <strong>{{ buildings.length ? 'No matching buildings' : 'No buildings yet' }}</strong>
+            <p>{{ buildings.length ? 'Try another search or clear the campus area filter.' : 'Add your first building to start your campus directory.' }}</p>
+            <button v-if="!buildings.length" class="btn" @click="openForm()">Add a building</button>
+            <button v-else class="btn btn-secondary btn-sm" @click="searchQuery = ''; filterArea = ''">Clear filters</button>
+          </div>
         </div>
       </section>
-
-      <!-- Building Form Modal -->
-      <div v-if="showForm" class="modal-overlay" @click.self="resetForm">
-        <div class="modal" @click.stop>
-          <h2>{{ editingBuilding ? 'Edit Building' : 'Add Building' }}</h2>
-          <form @submit.prevent="submitForm" class="form">
-            <div class="form-row">
-              <label>Name *</label>
-              <input v-model="buildingForm.name" required />
-            </div>
-            <div class="form-row">
-              <label>Code *</label>
-              <input v-model="buildingForm.code" required maxlength="5" style="text-transform: uppercase" />
-            </div>
-            <div class="form-row">
-              <label>Description</label>
-              <textarea v-model="buildingForm.description" rows="3"></textarea>
-            </div>
-            <div class="form-row">
-              <label>Location *</label>
-              <input v-model="buildingForm.location" required list="locations" />
-              <datalist id="locations">
-                <option v-for="loc in allLocations" :key="loc" :value="loc" />
-              </datalist>
-            </div>
-            <div class="form-row">
-              <label>Floors</label>
-              <input type="number" v-model.number="buildingForm.floors" min="1" max="20" />
-            </div>
-            <div class="form-row">
-              <label>Facilities (comma separated)</label>
-              <input v-model="buildingForm.facilities" placeholder="e.g. Labs, Lecture Halls, Offices" />
-            </div>
-            <div class="form-actions">
-              <button type="button" @click="resetForm" class="btn btn-secondary">Cancel</button>
-              <button type="submit" class="btn btn-primary">{{ editingBuilding ? 'Update' : 'Create' }}</button>
-            </div>
-          </form>
-        </div>
-      </div>
     </main>
   </div>
+
+  <div v-if="showForm" class="modal-backdrop" @click.self="closeForm" @keydown.esc="closeForm">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="directory-modal-title">
+      <h2 id="directory-modal-title">{{ editingId ? 'Edit building' : 'Add a building' }}</h2>
+      <p class="modal-intro">Provide a few details to help people find their way.</p>
+      <p v-if="formError" class="inline-alert" role="alert">{{ formError }}</p>
+      <form @submit.prevent="saveBuilding">
+        <div class="form-grid">
+          <div class="form-row"><label for="directory-name">Building name *</label><input id="directory-name" v-model="form.name" class="field" required maxlength="80" /></div>
+          <div class="form-row"><label for="directory-code">Short code *</label><input id="directory-code" v-model="form.code" class="field" required maxlength="8" /></div>
+          <div class="form-row full"><label for="directory-description">Description</label><textarea id="directory-description" v-model="form.description" class="field" maxlength="240"></textarea></div>
+          <div class="form-row"><label for="directory-area">Campus area *</label><input id="directory-area" v-model="form.location" class="field" required maxlength="60" placeholder="e.g. North Campus" /></div>
+          <div class="form-row"><label for="directory-floors">Number of floors *</label><input id="directory-floors" v-model.number="form.floors" class="field" type="number" min="1" max="40" required /></div>
+          <div class="form-row full"><label for="directory-facilities">Facilities (comma separated)</label><input id="directory-facilities" v-model="form.facilities" class="field" placeholder="Labs, lecture halls, offices" /></div>
+        </div>
+        <div class="form-actions"><button type="button" class="btn btn-secondary" @click="closeForm">Cancel</button><button class="btn">{{ editingId ? 'Save changes' : 'Add building' }}</button></div>
+      </form>
+    </section>
+  </div>
 </template>
-
-<script>
-import NavBar from '../components/NavBar.vue'
-export default { components: { NavBar } }
-</script>
-
-<style scoped>
-.page-container { min-height: 100vh; background: #f5f6fa; }
-.main-content { max-width: 1400px; margin: 0 auto; padding: 2rem; }
-.page-header { margin-bottom: 2rem; }
-.page-header h1 { margin: 0 0 0.5rem; color: #2c3e50; }
-.page-header p { color: #7f8c8d; margin: 0; }
-
-.card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 1.5rem; }
-.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
-.card-header h2 { margin: 0; color: #2c3e50; }
-
-.toolbar { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; align-items: center; }
-.search-box { position: relative; flex: 1; min-width: 250px; }
-.search-input { width: 100%; padding: 0.75rem 1rem 0.75rem 2.5rem; border: 1px solid #dfe6e9; border-radius: 8px; font-size: 1rem; }
-.search-input:focus { outline: none; border-color: #3498db; box-shadow: 0 0 0 3px rgba(52,152,219,0.2); }
-.search-icon { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: #95a5a6; }
-.filters { display: flex; gap: 0.75rem; }
-.filter-select { padding: 0.75rem 1rem; border: 1px solid #dfe6e9; border-radius: 8px; font-size: 0.9rem; background: white; }
-.filter-select:focus { outline: none; border-color: #3498db; }
-
-.buildings-table-container { overflow-x: auto; }
-.buildings-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.buildings-table th, .buildings-table td { padding: 1rem; text-align: left; border-bottom: 1px solid #e1e8ed; }
-.buildings-table th { background: #f8f9fa; font-weight: 600; color: #2c3e50; white-space: nowrap; }
-.buildings-table td { color: #2c3e50; }
-.buildings-table tr:hover { background: #f8f9fa; }
-.buildings-table small { color: #7f8c8d; display: block; margin-top: 0.25rem; }
-.code-badge { background: #3498db; color: white; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.8rem; font-weight: bold; }
-.facility-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-.facility-tag { background: #e8f4fd; color: #2980b9; padding: 0.15rem 0.5rem; border-radius: 12px; font-size: 0.7rem; }
-.fav-btn { background: none; border: none; font-size: 1.25rem; cursor: pointer; padding: 0.25rem; border-radius: 4px; transition: all 0.2s; }
-.fav-btn:hover { background: #fef9e7; transform: scale(1.2); }
-.fav-btn.active { filter: drop-shadow(0 0 4px #f39c12); }
-.action-buttons { display: flex; gap: 0.25rem; }
-.btn-icon { background: none; border: none; cursor: pointer; font-size: 1rem; padding: 0.4rem; border-radius: 4px; }
-.btn-icon:hover { background: #e1e8ed; }
-.btn-icon.danger:hover { background: #fadbd8; }
-.empty-state { text-align: center; padding: 3rem; color: #95a5a6; font-style: italic; }
-
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; padding: 1rem; z-index: 200; }
-.modal { background: white; border-radius: 12px; padding: 2rem; width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; }
-.modal h2 { margin: 0 0 1.5rem; color: #2c3e50; }
-.form { display: flex; flex-direction: column; gap: 1rem; }
-.form-row { display: flex; flex-direction: column; gap: 0.4rem; }
-.form-row label { font-weight: 500; color: #2c3e50; font-size: 0.9rem; }
-.form-row input, .form-row select, .form-row textarea { padding: 0.75rem; border: 1px solid #dfe6e9; border-radius: 6px; font-size: 1rem; font-family: inherit; }
-.form-row input:focus, .form-row select:focus, .form-row textarea:focus { outline: none; border-color: #3498db; box-shadow: 0 0 0 3px rgba(52,152,219,0.2); }
-.form-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.5rem; }
-.btn { padding: 0.6rem 1.2rem; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 0.9rem; }
-.btn-primary { background: #3498db; color: white; }
-.btn-primary:hover { background: #2980b9; }
-.btn-secondary { background: #ecf0f1; color: #2c3e50; }
-.btn-secondary:hover { background: #bdc3c7; }
-
-@media (max-width: 768px) {
-  .main-content { padding: 1rem; }
-  .toolbar { flex-direction: column; align-items: stretch; }
-  .search-box { min-width: 0; }
-}
-</style>
